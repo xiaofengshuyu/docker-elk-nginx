@@ -15,21 +15,23 @@ input {
 }
 
 filter {
-    grok {
-        match => { "message" => "%{COMBINEDAPACHELOG} %{QS:x_forwarded_for}"}
-    }
-    date {
-        match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
-    }
-    geoip {
-        source => "clientip"
+    if [type] == "nginx-access" {
+        grok {
+            match => { "message" => "%{COMBINEDAPACHELOG} %{QS:x_forwarded_for}"}
+        }
+        date {
+            match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
+        }
+        geoip {
+            source => "clientip"
+        }
     }
 }
 
 output {
     elasticsearch {
         hosts => "$ELASTICSEARCH_HOST:9200"
-        index => "logstash-nginx-access-%{+YYYY.MM.dd}"
+        index => "logstash-%{type}-%{+YYYY.MM.dd}"
     }
     stdout { codec => rubydebug }
 }
@@ -46,34 +48,36 @@ input {
     }
 }
 filter {
-    grok {
-        match => { "message" => "(?<datetime>\d\d\d\d/\d\d/\d\d \d\d:\d\d:\d\d) \[(?<errtype>\w+)\] \S+: \*\d+ (?<errmsg>[^,]+), (?<errinfo>.*)$" }
-    }
-    mutate {
-        rename => [ "host", "fromhost" ]
-        gsub => [ "errmsg", "too large body: \d+ bytes", "too large body" ]
-    }
-    if [errinfo]
-    {
-        ruby {
-            code => "
-                new_event = LogStash::Event.new(Hash[event.get('errinfo').split(', ').map{|l| l.split(': ')}])
-                new_event.remove('@timestamp')
-                event.append(new_event)
-            "
+    if [type] == "nginx-error" {
+        grok {
+            match => { "message" => "(?<datetime>\d\d\d\d/\d\d/\d\d \d\d:\d\d:\d\d) \[(?<errtype>\w+)\] \S+: \*\d+ (?<errmsg>[^,]+), (?<errinfo>.*)$" }
         }
-    }
-    grok {
-        match => { "request" => '"%{WORD:verb} %{URIPATH:urlpath}(?: HTTP/%{NUMBER:httpversion})"' }
-        patterns_dir => ["/etc/logstash/patterns"]
-        remove_field => [ "message", "errinfo", "request" ]
+        mutate {
+            rename => [ "host", "fromhost" ]
+            gsub => [ "errmsg", "too large body: \d+ bytes", "too large body" ]
+        }
+        if [errinfo]
+        {
+            ruby {
+                code => "
+                    new_event = LogStash::Event.new(Hash[event.get('errinfo').split(', ').map{|l| l.split(': ')}])
+                    new_event.remove('@timestamp')
+                    event.append(new_event)
+                "
+            }
+        }
+        grok {
+            match => { "request" => '"%{WORD:verb} %{URIPATH:urlpath}(?: HTTP/%{NUMBER:httpversion})"' }
+            patterns_dir => ["/etc/logstash/patterns"]
+            remove_field => [ "message", "errinfo", "request" ]
+        }
     }
 }
 
 output {
     elasticsearch {
         hosts => "$ELASTICSEARCH_HOST:9200"
-        index => "logstash-nginx-error-%{+YYYY.MM.dd}"
+        index => "logstash-%{type}-%{+YYYY.MM.dd}"
     }
     stdout { codec => rubydebug }
 }
